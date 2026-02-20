@@ -1,8 +1,68 @@
 import ExpoNativeTrackPlayer, {
-  type PlaybackState,
   type RepeatMode,
+  type State as NativeState,
   type TrackMetadata,
 } from './NativeExpoNativeTrackPlayer';
+import {
+  AudioEvents,
+  Event,
+  TrackPlayerEvents,
+  type PlaybackPositionEvent,
+  type PlaybackStateEvent,
+  type QueueUpdatedEvent,
+  type TrackChangedEvent,
+} from './events';
+import type { EventName } from './events';
+import {
+  useCurrentTrack,
+  useCurrentTrackIndex,
+  usePlaybackState,
+  useProgress,
+  useQueue,
+} from './hooks';
+import type { AddTrack, Track } from './types/Track';
+import type { PlaybackSnapshot } from './types/PlaybackSnapshot';
+import type { ResourceObject } from './types/ResourceObject';
+import type { TrackMetadataBase } from './types/TrackMetadataBase';
+import { PitchAlgorithms, TrackTypes } from './constants';
+import type {
+  PitchAlgorithm,
+  RepeatModeType,
+  StateType,
+  TrackType,
+} from './constants';
+
+export { State, RepeatModes } from './constants';
+
+function resolveResourceUri(
+  resource?: string | ResourceObject
+): string | undefined {
+  if (resource == null) return undefined;
+  if (typeof resource === 'string') return resource;
+  return resource.uri;
+}
+
+function toTrackMetadata(track: AddTrack): TrackMetadata {
+  const { url, artwork, artworkUri, ...rest } = track;
+
+  const resolvedUrl = resolveResourceUri(url);
+  if (!resolvedUrl) {
+    throw new Error('Track.url is required');
+  }
+
+  const resolvedArtwork = resolveResourceUri(artwork);
+  const metadata: TrackMetadata = {
+    ...(rest as TrackMetadata),
+    url: resolvedUrl,
+    artworkUri: resolvedArtwork ?? artworkUri,
+  };
+
+  return metadata;
+}
+
+function toTrackMetadataList(tracks: AddTrack[]): TrackMetadata[] {
+  return tracks.map(toTrackMetadata);
+}
 
 function callVoid(action: () => void): Promise<void> {
   try {
@@ -21,12 +81,16 @@ function callValue<T>(action: () => T): Promise<T> {
   }
 }
 
-export function addToQueue(track: TrackMetadata): Promise<void> {
-  return callVoid(() => ExpoNativeTrackPlayer.addToQueue(track));
+export function addToQueue(track: AddTrack): Promise<void> {
+  return callVoid(() =>
+    ExpoNativeTrackPlayer.addToQueue(toTrackMetadata(track))
+  );
 }
 
-export function addQueue(tracks: TrackMetadata[]): Promise<void> {
-  return callVoid(() => ExpoNativeTrackPlayer.addQueue(tracks));
+export function addQueue(tracks: AddTrack[]): Promise<void> {
+  return callVoid(() =>
+    ExpoNativeTrackPlayer.addQueue(toTrackMetadataList(tracks))
+  );
 }
 
 export function getQueue(): Promise<TrackMetadata[]> {
@@ -87,8 +151,10 @@ export function getRepeatMode(): Promise<RepeatMode> {
   return callValue(() => ExpoNativeTrackPlayer.getRepeatMode());
 }
 
-export function getCurrentTrack(): Promise<TrackMetadata | null> {
-  return callValue(() => ExpoNativeTrackPlayer.getCurrentTrack());
+export function getCurrentTrack(): Promise<Track | null> {
+  return callValue(
+    () => ExpoNativeTrackPlayer.getCurrentTrack() as Track | null
+  );
 }
 
 export function getCurrentTrackIndex(): Promise<number> {
@@ -103,7 +169,7 @@ export function getDuration(): Promise<number> {
   return callValue(() => ExpoNativeTrackPlayer.getDuration());
 }
 
-export function getPlaybackState(): Promise<PlaybackState> {
+export function getPlaybackState(): Promise<NativeState> {
   return callValue(() => ExpoNativeTrackPlayer.getPlaybackState());
 }
 
@@ -121,6 +187,10 @@ export function setRate(rate: number): Promise<void> {
 
 export function getRate(): Promise<number> {
   return callValue(() => ExpoNativeTrackPlayer.getRate());
+}
+
+export function getLastPlaybackSnapshot(): Promise<PlaybackSnapshot | null> {
+  return callValue(() => ExpoNativeTrackPlayer.getLastPlaybackSnapshot());
 }
 
 const TrackPlayer = {
@@ -148,7 +218,40 @@ const TrackPlayer = {
   getVolume,
   setRate,
   getRate,
+  getLastPlaybackSnapshot,
 };
 
 export default TrackPlayer;
-export type { PlaybackState, RepeatMode, TrackMetadata };
+export type {
+  EventName,
+  RepeatMode,
+  NativeState as PlaybackState,
+  Track,
+  AddTrack,
+  TrackMetadata,
+  TrackMetadataBase,
+  ResourceObject,
+  TrackType,
+  PitchAlgorithm,
+  RepeatModeType,
+  StateType,
+  PlaybackSnapshot,
+};
+export {
+  AudioEvents,
+  Event,
+  TrackPlayerEvents,
+  PitchAlgorithms,
+  TrackTypes,
+  useCurrentTrack,
+  useCurrentTrackIndex,
+  usePlaybackState,
+  useProgress,
+  useQueue,
+};
+export type {
+  PlaybackPositionEvent,
+  PlaybackStateEvent,
+  QueueUpdatedEvent,
+  TrackChangedEvent,
+};
