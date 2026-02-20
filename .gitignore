@@ -64,3 +64,4 @@ app-example
 .env.local
 .bundle/*
 /example/.bundle/*
+.yarn/install-state.gz
