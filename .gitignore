@@ -8,6 +8,10 @@ node_modules/
 dist/
 web-build/
 expo-env.d.ts
+coverage/
+.turbo/
+.cache/
+.eslintcache
 
 # Native
 .kotlin/
@@ -22,6 +26,10 @@ DerivedData/
 **/Pods/
 **/build/
 **/.gradle/
+**/xcuserdata/
+**/*.xcuserstate
+**/.cxx/
+**/DerivedData/
 
 # Metro
 .metro-health-check*
@@ -42,6 +50,8 @@ yarn-error.*
 
 # local env files
 .env*.local
+.env
+.env.*
 
 # typescript
 *.tsbuildinfo

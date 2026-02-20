@@ -2,15 +2,21 @@
 
 TurboModule track player for React Native New Architecture (iOS + Android).
 
+## Docs
+
+- [Full documentation](docs/README.md)
+- [Types reference](docs/types.md)
+
 ## Features
 
-- Native queue management
+- Native queue management (no JS-side queue required)
 - Repeat modes: `off`, `track`, `queue`, `loop_portion`
-- Full track metadata
-- Background playback ready (native)
-- Android foreground service + media notification
-- Audio focus handling (Android)
-- Simple async JS API
+- Full track metadata + custom fields
+- Background playback with lock-screen / notification controls
+- iOS: MPRemoteCommandCenter + Now Playing info
+- Android: MediaSession + foreground service + notification
+- Playback snapshots (native) for recovery after background/kill
+- Typed events + hooks (`useProgress`, `useQueue`, etc.)
 
 ## Installation (outside this repo)
 
@@ -78,7 +84,7 @@ Enable background audio in your app target:
 ### Android
 
 This module uses a foreground media service for reliable background playback.
-Ensure your app has these permissions:
+Ensure your app has these permissions (app manifest):
 
 ```xml
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -91,7 +97,7 @@ media notification to appear.
 
 Make sure you test background playback on a real device.
 
-## Usage
+## Quick start
 
 ```tsx
 import TrackPlayer, {
@@ -112,34 +118,11 @@ await TrackPlayer.addToQueue(track);
 await TrackPlayer.play(null);
 ```
 
-## API
+## API (summary)
 
 All time values are milliseconds unless stated otherwise.
 
-### Types
-
-```ts
-export interface TrackMetadata {
-  id: string;
-  url: string;
-  title?: string;
-  artist?: string;
-  albumName?: string;
-  artworkUri?: string;
-  trackNumber?: number;
-  composer?: string;
-  conductor?: string;
-  genre?: string;
-  compilation?: string;
-  subtitle?: string;
-  description?: string;
-  station?: string;
-  mediaType?: number;
-}
-
-export type RepeatMode = 'off' | 'track' | 'queue' | 'loop_portion';
-export type PlaybackState = 'playing' | 'paused' | 'stopped';
-```
+See [Types reference](docs/types.md) for the full list.
 
 ### Queue
 
@@ -202,6 +185,12 @@ export type PlaybackState = 'playing' | 'paused' | 'stopped';
 - URL must be ASCII-safe. If it contains non-ASCII characters, URL-encode it.
 - Ensure device volume and notification permission are enabled.
 - Test on a real device; emulators are not reliable for audio focus/Doze.
+
+### iOS: snapshot crash on load/reset
+
+- Snapshots are saved natively and must be valid property list values.
+- If you changed native code recently, delete the app to clear old snapshots.
+- Avoid `NaN`/`Infinity` positions; use `0` when duration is unknown.
 
 ### Android: queue empty after add
 
