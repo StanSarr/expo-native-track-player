@@ -1,5 +1,7 @@
 #import "ExpoNativeTrackPlayer.h"
 #import <AVFoundation/AVFoundation.h>
+#import <MediaPlayer/MediaPlayer.h>
+#import <React/RCTBridge.h>
 
 @interface ExpoNativeTrackPlayer ()
 
@@ -13,10 +15,24 @@
 @property (nonatomic, assign) float playbackRate;
 @property (nonatomic, strong, nullable) id timeObserver;
 @property (nonatomic, strong, nullable) id endObserver;
+@property (nonatomic, assign) double lastSnapshotSavedAtMs;
 
 @end
 
 @implementation ExpoNativeTrackPlayer
+
+RCT_EXPORT_MODULE();
+@synthesize bridge = _bridge;
+
+static NSString *const ExpoNativeTrackPlayerEventPlaybackState = @"playback-state";
+static NSString *const ExpoNativeTrackPlayerEventPlaybackProgress = @"playback-progress-updated";
+static NSString *const ExpoNativeTrackPlayerEventPlaybackActiveTrackChanged =
+  @"playback-active-track-changed";
+static NSString *const ExpoNativeTrackPlayerEventPlaybackQueueEnded =
+  @"playback-queue-ended";
+static NSString *const ExpoNativeTrackPlayerEventQueueUpdated = @"queue-updated";
+static NSString *const ExpoNativeTrackPlayerSnapshotKey =
+  @"expo-native-track-player.snapshot";
 
 - (instancetype)init
 {
@@ -28,6 +44,7 @@
     _playbackState = @"stopped";
     _playbackRate = 1.0f;
     [self configureAudioSession];
+    [self setupRemoteCommands];
     [self startLoopWatcher];
   }
   return self;
@@ -55,6 +72,10 @@
   if (track.artist().length > 0) dictionary[@"artist"] = track.artist();
   if (track.albumName().length > 0) dictionary[@"albumName"] = track.albumName();
   if (track.artworkUri().length > 0) dictionary[@"artworkUri"] = track.artworkUri();
+  if (track.type().length > 0) dictionary[@"type"] = track.type();
+  if (track.userAgent().length > 0) dictionary[@"userAgent"] = track.userAgent();
+  if (track.contentType().length > 0) dictionary[@"contentType"] = track.contentType();
+  if (track.pitchAlgorithm().length > 0) dictionary[@"pitchAlgorithm"] = track.pitchAlgorithm();
   if (track.composer().length > 0) dictionary[@"composer"] = track.composer();
   if (track.conductor().length > 0) dictionary[@"conductor"] = track.conductor();
   if (track.genre().length > 0) dictionary[@"genre"] = track.genre();
@@ -64,6 +85,9 @@
   if (track.station().length > 0) dictionary[@"station"] = track.station();
   if (track.trackNumber().has_value()) {
     dictionary[@"trackNumber"] = @(track.trackNumber().value());
+  }
+  if (track.duration().has_value()) {
+    dictionary[@"duration"] = @(track.duration().value());
   }
   if (track.mediaType().has_value()) {
     dictionary[@"mediaType"] = @(track.mediaType().value());
@@ -78,10 +102,81 @@
   return value;
 }
 
+- (void)addListener:(NSString *)eventName
+{
+}
+
+- (void)removeListeners:(double)count
+{
+}
+
+- (void)emitEvent:(NSString *)name body:(NSDictionary *)body
+{
+  if (self.bridge == nil || name.length == 0) return;
+  NSArray *args = body != nil ? @[name, body] : @[name, [NSNull null]];
+  [self.bridge enqueueJSCall:@"RCTDeviceEventEmitter" method:@"emit" args:args completion:NULL];
+}
+
+- (void)emitPlaybackState
+{
+  [self emitEvent:ExpoNativeTrackPlayerEventPlaybackState body:@{
+    @"state": self.playbackState ?: @"stopped"
+  }];
+  [self updateNowPlayingInfo];
+}
+
+- (void)emitQueueUpdated
+{
+  NSDictionary *payload = @{
+    @"count": @(self.queue.count),
+    @"trackIndex": @(self.currentIndex),
+    @"queue": [self.queue copy]
+  };
+  [self emitEvent:ExpoNativeTrackPlayerEventQueueUpdated body:payload];
+}
+
+- (void)emitTrackChanged
+{
+  NSDictionary *track = nil;
+  if (self.currentIndex >= 0 && self.currentIndex < (NSInteger)self.queue.count) {
+    track = self.queue[(NSUInteger)self.currentIndex];
+  }
+  NSDictionary *payload = @{
+    @"trackIndex": @(self.currentIndex),
+    @"track": track ?: (id)kCFNull
+  };
+  [self emitEvent:ExpoNativeTrackPlayerEventPlaybackActiveTrackChanged body:payload];
+  [self updateNowPlayingInfo];
+}
+
+- (void)emitPlaybackPositionWithPosition:(double)position
+                               duration:(double)duration
+                              trackIndex:(NSInteger)trackIndex
+{
+  NSDictionary *payload = @{
+    @"position": @(position),
+    @"duration": @(duration),
+    @"trackIndex": @(trackIndex)
+  };
+  [self emitEvent:ExpoNativeTrackPlayerEventPlaybackProgress body:payload];
+  [self updateNowPlayingInfoWithPosition:position duration:duration];
+  [self saveSnapshotIfNeededWithPosition:position duration:duration trackIndex:trackIndex force:NO];
+}
+
+- (void)emitPlaybackQueueEnded
+{
+  NSDictionary *payload = @{
+    @"trackIndex": @(self.currentIndex),
+    @"position": @([self getPosition].doubleValue)
+  };
+  [self emitEvent:ExpoNativeTrackPlayerEventPlaybackQueueEnded body:payload];
+}
+
 - (void)addToQueue:(JS::NativeExpoNativeTrackPlayer::TrackMetadata &)track
 {
   NSDictionary *dictionary = [self dictionaryFromTrack:track];
   [self.queue addObject:dictionary];
+  [self emitQueueUpdated];
 }
 
 - (void)addQueue:(NSArray *)tracks
@@ -91,6 +186,7 @@
     if (![track isKindOfClass:[NSDictionary class]]) continue;
     [self.queue addObject:track];
   }
+  [self emitQueueUpdated];
 }
 
 - (NSArray<NSDictionary *> *)getQueue
@@ -114,9 +210,12 @@
   if (indexToRemove == self.currentIndex) {
     [self stopInternal];
     self.currentIndex = -1;
+    [self emitTrackChanged];
   } else if (indexToRemove < self.currentIndex) {
     self.currentIndex -= 1;
+    [self emitTrackChanged];
   }
+  [self emitQueueUpdated];
 }
 
 - (void)clearQueue
@@ -124,6 +223,8 @@
   [self.queue removeAllObjects];
   [self stopInternal];
   self.currentIndex = -1;
+  [self emitQueueUpdated];
+  [self emitTrackChanged];
 }
 
 - (void)play:(NSNumber *)index
@@ -168,6 +269,8 @@
   [self.queue removeAllObjects];
   [self stopInternal];
   self.currentIndex = -1;
+  [self emitQueueUpdated];
+  [self emitTrackChanged];
 }
 
 - (void)setRepeatMode:(NSString *)mode startMs:(NSNumber *)startMs endMs:(NSNumber *)endMs
@@ -258,6 +361,7 @@
   [self.player replaceCurrentItemWithPlayerItem:item];
   self.currentIndex = index;
   [self observeItemEnd:item];
+  [self emitTrackChanged];
 }
 
 - (void)observeItemEnd:(AVPlayerItem *)item
@@ -302,19 +406,31 @@
     [self loadTrackAtIndex:nextIndex];
     [self.player playImmediatelyAtRate:self.playbackRate];
   } else {
-    [self setPlaybackState:@"stopped"];
+    [self setPlaybackState:@"ended"];
+    [self emitPlaybackQueueEnded];
   }
 }
 
 - (void)startLoopWatcher
 {
   __weak ExpoNativeTrackPlayer *weakSelf = self;
-  CMTime interval = CMTimeMakeWithSeconds(0.25, 600);
+  CMTime interval = CMTimeMakeWithSeconds(0.1, 600);
   self.timeObserver = [self.player addPeriodicTimeObserverForInterval:interval
                                                                 queue:dispatch_get_main_queue()
                                                            usingBlock:^(CMTime time) {
     double positionMs = CMTimeGetSeconds(time) * 1000.0;
     [weakSelf handleLoopPortionIfNeeded:positionMs];
+    double durationMs = 0.0;
+    AVPlayerItem *item = weakSelf.player.currentItem;
+    if (item != nil) {
+      durationMs = CMTimeGetSeconds(item.duration) * 1000.0;
+      if (isnan(durationMs) || isinf(durationMs)) {
+        durationMs = 0.0;
+      }
+    }
+    [weakSelf emitPlaybackPositionWithPosition:positionMs
+                                      duration:durationMs
+                                     trackIndex:weakSelf.currentIndex];
   }];
 }
 
@@ -348,6 +464,95 @@
 {
   NSString *nextState = state ?: @"stopped";
   _playbackState = [nextState copy];
+  [self emitPlaybackState];
+  [self saveSnapshotWithCurrentValuesForce:YES];
+}
+
+- (NSDictionary *)currentSnapshotWithPosition:(double)position
+                                      duration:(double)duration
+                                     trackIndex:(NSInteger)trackIndex
+{
+  NSString *trackId = nil;
+  if (trackIndex >= 0 && trackIndex < (NSInteger)self.queue.count) {
+    NSDictionary *track = self.queue[(NSUInteger)trackIndex];
+    if ([track[@"id"] isKindOfClass:[NSString class]]) {
+      trackId = track[@"id"];
+    }
+  }
+  double savedAt = [[NSDate date] timeIntervalSince1970] * 1000.0;
+  double safePosition = isfinite(position) ? position : 0.0;
+  double safeDuration = isfinite(duration) ? duration : 0.0;
+  NSMutableDictionary *snapshot = [@{
+    @"state": self.playbackState ?: @"stopped",
+    @"position": @(safePosition),
+    @"duration": @(safeDuration),
+    @"trackIndex": @(trackIndex),
+    @"rate": @(self.playbackRate),
+    @"volume": @(self.player.volume),
+    @"repeatMode": self.repeatMode ?: @"off",
+    @"savedAt": @(savedAt)
+  } mutableCopy];
+  if (trackId != nil) {
+    snapshot[@"trackId"] = trackId;
+  }
+  return snapshot;
+}
+
+- (void)saveSnapshotIfNeededWithPosition:(double)position
+                                duration:(double)duration
+                               trackIndex:(NSInteger)trackIndex
+                                   force:(BOOL)force
+{
+  if (trackIndex < 0) {
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:ExpoNativeTrackPlayerSnapshotKey];
+    return;
+  }
+  if (!isfinite(position) || !isfinite(duration)) {
+    return;
+  }
+  double nowMs = [[NSDate date] timeIntervalSince1970] * 1000.0;
+  if (!force && nowMs - self.lastSnapshotSavedAtMs < 1000.0) return;
+  self.lastSnapshotSavedAtMs = nowMs;
+  NSDictionary *snapshot =
+    [self currentSnapshotWithPosition:position duration:duration trackIndex:trackIndex];
+  if (![NSPropertyListSerialization propertyList:snapshot
+                                        isValidForFormat:NSPropertyListBinaryFormat_v1_0]) {
+    return;
+  }
+  [[NSUserDefaults standardUserDefaults] setObject:snapshot
+                                            forKey:ExpoNativeTrackPlayerSnapshotKey];
+}
+
+- (void)saveSnapshotWithCurrentValuesForce:(BOOL)force
+{
+  if (self.currentIndex < 0) {
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:ExpoNativeTrackPlayerSnapshotKey];
+    return;
+  }
+  double position = CMTimeGetSeconds([self.player currentTime]) * 1000.0;
+  if (!isfinite(position)) {
+    position = 0.0;
+  }
+  double duration = 0.0;
+  AVPlayerItem *item = self.player.currentItem;
+  if (item != nil) {
+    duration = CMTimeGetSeconds(item.duration) * 1000.0;
+    if (!isfinite(duration)) {
+      duration = 0.0;
+    }
+  }
+  [self saveSnapshotIfNeededWithPosition:position
+                                duration:duration
+                               trackIndex:self.currentIndex
+                                   force:force];
+}
+
+- (NSDictionary * _Nullable)getLastPlaybackSnapshot
+{
+  NSDictionary *snapshot =
+    [[NSUserDefaults standardUserDefaults] objectForKey:ExpoNativeTrackPlayerSnapshotKey];
+  if (![snapshot isKindOfClass:[NSDictionary class]]) return nil;
+  return snapshot;
 }
 
 - (void)configureAudioSession
@@ -358,15 +563,132 @@
   [session setActive:YES error:&error];
 }
 
+- (void)setupRemoteCommands
+{
+  MPRemoteCommandCenter *commandCenter = [MPRemoteCommandCenter sharedCommandCenter];
+  commandCenter.playCommand.enabled = YES;
+  commandCenter.pauseCommand.enabled = YES;
+  commandCenter.nextTrackCommand.enabled = YES;
+  commandCenter.previousTrackCommand.enabled = YES;
+  commandCenter.changePlaybackPositionCommand.enabled = YES;
+  commandCenter.skipForwardCommand.enabled = YES;
+  commandCenter.skipBackwardCommand.enabled = YES;
+  commandCenter.skipForwardCommand.preferredIntervals = @[@(15)];
+  commandCenter.skipBackwardCommand.preferredIntervals = @[@(15)];
+
+  __weak ExpoNativeTrackPlayer *weakSelf = self;
+  [commandCenter.playCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+    [weakSelf playInternal:nil];
+    return MPRemoteCommandHandlerStatusSuccess;
+  }];
+  [commandCenter.pauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+    [weakSelf pause];
+    return MPRemoteCommandHandlerStatusSuccess;
+  }];
+  [commandCenter.nextTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+    [weakSelf skipToNext];
+    return MPRemoteCommandHandlerStatusSuccess;
+  }];
+  [commandCenter.previousTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+    [weakSelf skipToPrevious];
+    return MPRemoteCommandHandlerStatusSuccess;
+  }];
+  [commandCenter.changePlaybackPositionCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+    if (![event isKindOfClass:[MPChangePlaybackPositionCommandEvent class]]) {
+      return MPRemoteCommandHandlerStatusCommandFailed;
+    }
+    MPChangePlaybackPositionCommandEvent *seekEvent = (MPChangePlaybackPositionCommandEvent *)event;
+    double positionMs = seekEvent.positionTime * 1000.0;
+    [weakSelf seekTo:positionMs];
+    return MPRemoteCommandHandlerStatusSuccess;
+  }];
+  [commandCenter.skipForwardCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+    double position = CMTimeGetSeconds([weakSelf.player currentTime]) * 1000.0;
+    [weakSelf seekTo:(position + 15000.0)];
+    return MPRemoteCommandHandlerStatusSuccess;
+  }];
+  [commandCenter.skipBackwardCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+    double position = CMTimeGetSeconds([weakSelf.player currentTime]) * 1000.0;
+    [weakSelf seekTo:MAX(0.0, position - 15000.0)];
+    return MPRemoteCommandHandlerStatusSuccess;
+  }];
+}
+
+- (void)updateNowPlayingInfo
+{
+  NSDictionary *track = nil;
+  if (self.currentIndex >= 0 && self.currentIndex < (NSInteger)self.queue.count) {
+    track = self.queue[(NSUInteger)self.currentIndex];
+  }
+  NSMutableDictionary *info = [NSMutableDictionary dictionary];
+  if (track[@"title"]) info[MPMediaItemPropertyTitle] = track[@"title"];
+  if (track[@"artist"]) info[MPMediaItemPropertyArtist] = track[@"artist"];
+  if (track[@"albumName"]) info[MPMediaItemPropertyAlbumTitle] = track[@"albumName"];
+  if (track[@"artworkUri"] && [track[@"artworkUri"] isKindOfClass:[NSString class]]) {
+    NSString *artworkUri = track[@"artworkUri"];
+    NSURL *url = [NSURL URLWithString:artworkUri];
+    if (url != nil) {
+      dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSData *data = [NSData dataWithContentsOfURL:url];
+        UIImage *image = data != nil ? [UIImage imageWithData:data] : nil;
+        if (image != nil) {
+          MPMediaItemArtwork *artwork =
+            [[MPMediaItemArtwork alloc] initWithBoundsSize:image.size
+                                             requestHandler:^UIImage * _Nonnull(CGSize size) {
+            return image;
+          }];
+          dispatch_async(dispatch_get_main_queue(), ^{
+            NSMutableDictionary *updated = [info mutableCopy];
+            updated[MPMediaItemPropertyArtwork] = artwork;
+            [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = updated;
+          });
+        }
+      });
+    }
+  }
+  double position = CMTimeGetSeconds([self.player currentTime]);
+  double duration = 0.0;
+  AVPlayerItem *item = self.player.currentItem;
+  if (item != nil) {
+    duration = CMTimeGetSeconds(item.duration);
+    if (!isfinite(duration)) {
+      duration = 0.0;
+    }
+  }
+  if (isfinite(position)) {
+    info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @(position);
+  }
+  info[MPMediaItemPropertyPlaybackDuration] = @(duration);
+  info[MPNowPlayingInfoPropertyPlaybackRate] =
+    [self.playbackState isEqualToString:@"playing"] ? @(self.playbackRate) : @(0);
+  [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = info;
+}
+
+- (void)updateNowPlayingInfoWithPosition:(double)positionMs duration:(double)durationMs
+{
+  NSMutableDictionary *info =
+    [[MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo mutableCopy];
+  if (info == nil) {
+    [self updateNowPlayingInfo];
+    return;
+  }
+  double position = positionMs / 1000.0;
+  double duration = durationMs / 1000.0;
+  if (isfinite(position)) {
+    info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @(position);
+  }
+  if (isfinite(duration)) {
+    info[MPMediaItemPropertyPlaybackDuration] = @(duration);
+  }
+  info[MPNowPlayingInfoPropertyPlaybackRate] =
+    [self.playbackState isEqualToString:@"playing"] ? @(self.playbackRate) : @(0);
+  [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = info;
+}
+
 - (std::shared_ptr<facebook::react::TurboModule>)getTurboModule:
     (const facebook::react::ObjCTurboModule::InitParams &)params
 {
   return std::make_shared<facebook::react::NativeExpoNativeTrackPlayerSpecJSI>(params);
-}
-
-+ (NSString *)moduleName
-{
-  return @"ExpoNativeTrackPlayer";
 }
 
 @end
