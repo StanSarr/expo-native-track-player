@@ -1,5 +1,4 @@
 import { TurboModuleRegistry, type TurboModule } from 'react-native';
-
 export interface TrackMetadata {
   id: string;
   url: string;
@@ -8,6 +7,7 @@ export interface TrackMetadata {
   albumName?: string;
   artworkUri?: string;
   trackNumber?: number;
+  duration?: number;
   composer?: string;
   conductor?: string;
   genre?: string;
@@ -16,11 +16,36 @@ export interface TrackMetadata {
   description?: string;
   station?: string;
   mediaType?: number;
+  type?: string;
+  userAgent?: string;
+  contentType?: string;
+  pitchAlgorithm?: string;
 }
 
 export type RepeatMode = 'off' | 'track' | 'queue' | 'loop_portion';
-export type PlaybackState = 'playing' | 'paused' | 'stopped';
+export type State =
+  | 'none'
+  | 'ready'
+  | 'playing'
+  | 'paused'
+  | 'stopped'
+  | 'loading'
+  | 'buffering'
+  | 'error'
+  | 'ended';
+export type PlaybackState = State;
 
+export interface PlaybackSnapshot {
+  state: State;
+  position: number;
+  duration: number;
+  trackIndex: number;
+  trackId?: string;
+  rate: number;
+  volume: number;
+  repeatMode: RepeatMode;
+  savedAt: number;
+}
 export interface Spec extends TurboModule {
   addToQueue(track: TrackMetadata): void;
   addQueue(tracks: Array<TrackMetadata>): void;
@@ -45,11 +70,14 @@ export interface Spec extends TurboModule {
   getCurrentTrackIndex(): number;
   getPosition(): number;
   getDuration(): number;
-  getPlaybackState(): PlaybackState;
+  getPlaybackState(): State;
   setVolume(volume: number): void;
   getVolume(): number;
   setRate(rate: number): void;
   getRate(): number;
+  getLastPlaybackSnapshot(): PlaybackSnapshot | null;
+  addListener(eventName: string): void;
+  removeListeners(count: number): void;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('ExpoNativeTrackPlayer');
