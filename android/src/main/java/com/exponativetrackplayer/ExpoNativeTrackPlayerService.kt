@@ -98,7 +98,7 @@ class ExpoNativeTrackPlayerService : MediaSessionService() {
             }
           })
           .build()
-          .apply { setPlayer(player) }
+          .also { manager -> manager.setPlayer(player) }
       } else {
         notificationManager?.setPlayer(player)
       }
